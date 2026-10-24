@@ -1,3 +1,8 @@
+Unreleased
+==========
+
+- Add sendMessageWithCollapseId for sending a message with an optional apns-collapse-id header
+
 0.5.0.0
 =======
 
