@@ -24,6 +24,7 @@ module Network.PushNotify.APN
     , hexEncodedToken
     , rawToken
     , sendMessage
+    , sendMessageWithCollapseId
     , sendSilentMessage
     , sendRawMessage
     , alertMessage
@@ -726,7 +727,7 @@ sendRawMessage
     -- ^ The response from the APN server
 sendRawMessage s deviceToken mJwtToken mPriority payload = catchErrors $
     withConnection s $ \c ->
-        sendApnRaw c deviceToken mJwtToken ApnPushTypeAlert mPriority payload
+        sendApnRaw c deviceToken mJwtToken ApnPushTypeAlert mPriority Nothing payload
 
 -- | Send a push notification message.
 sendMessage
@@ -742,9 +743,29 @@ sendMessage
     -- ^ The message to send
     -> IO ApnMessageResult
     -- ^ The response from the APN server
-sendMessage s token mJwt mPriority payload = catchErrors $
+sendMessage s token mJwt mPriority = sendMessageWithCollapseId s token mJwt mPriority Nothing
+
+-- | Send a push notification message with an optional @apns-collapse-id@ header.
+-- The device shows only the newest notification among those sharing a collapse id.
+-- APNs rejects ids longer than 64 bytes with 'ApnFatalErrorBadCollapseId'.
+sendMessageWithCollapseId
+    :: ApnSession
+    -- ^ Session to use
+    -> ApnToken
+    -- ^ Device to send the message to
+    -> Maybe ByteString
+    -- ^ JWT Bearer Token
+    -> Maybe ApnPriority
+    -- ^ Priority (Nothing uses default)
+    -> Maybe ByteString
+    -- ^ Collapse id (Nothing omits the @apns-collapse-id@ header)
+    -> JsonAps
+    -- ^ The message to send
+    -> IO ApnMessageResult
+    -- ^ The response from the APN server
+sendMessageWithCollapseId s token mJwt mPriority mCollapseId payload = catchErrors $
     withConnection s $ \c ->
-        sendApnRaw c token mJwt ApnPushTypeAlert mPriority message
+        sendApnRaw c token mJwt ApnPushTypeAlert mPriority mCollapseId message
   where message = L.toStrict $ encode payload
 
 -- | Send a silent push notification
@@ -760,7 +781,7 @@ sendSilentMessage
     -- ^ The response from the APN server
 sendSilentMessage s token mJwt = catchErrors $
     withConnection s $ \c ->
-        sendApnRaw c token mJwt ApnPushTypeBackground (Just ApnPriorityPowerEfficient) message
+        sendApnRaw c token mJwt ApnPushTypeBackground (Just ApnPriorityPowerEfficient) Nothing message
   where message = "{\"aps\":{\"content-available\":1}}"
 
 -- | Send a widget notification
@@ -778,7 +799,7 @@ sendWidgetNotification
     -- ^ The response from the APN server
 sendWidgetNotification s token mJwt mPriority = catchErrors $
     withConnection s $ \c ->
-        sendApnRaw c token mJwt ApnPushTypeWidgets mPriority message
+        sendApnRaw c token mJwt ApnPushTypeWidgets mPriority Nothing message
   where message = L.toStrict $ encode newWidgetMessage
 
 ensureSessionOpen :: ApnSession -> IO ()
@@ -803,10 +824,12 @@ sendApnRaw
     -- ^ Push type (alert, background, widgets)
     -> Maybe ApnPriority
     -- ^ Priority (Nothing uses default for push type)
+    -> Maybe ByteString
+    -- ^ Collapse id (Nothing omits the apns-collapse-id header)
     -> ByteString
     -- ^ The message to send
     -> ClientIO ApnMessageResult
-sendApnRaw connection deviceToken mJwtBearerToken pushType mPriority message = bracket_
+sendApnRaw connection deviceToken mJwtBearerToken pushType mPriority mCollapseId message = bracket_
   (lift $ waitQSem (apnConnectionWorkerPool connection))
   (lift $ signalQSem (apnConnectionWorkerPool connection)) $ do
     let aci = apnConnectionInfo connection
@@ -814,6 +837,7 @@ sendApnRaw connection deviceToken mJwtBearerToken pushType mPriority message = b
         requestHeaders = maybe (defaultHeaders hostname token1 topic pushType priority)
                          (\bearerToken -> (defaultHeaders hostname token1 topic pushType priority) <> [ ( "authorization", "bearer " <> bearerToken ) ])
                          mJwtBearerToken
+                         <> maybe [] (\collapseId -> [ ( "apns-collapse-id", collapseId ) ]) mCollapseId
         hostname = aciHostname aci
         topic = aciTopic aci
         client = apnConnectionConnection connection
